@@ -240,6 +240,8 @@ static void synaptics_ts_late_resume(struct early_suspend *h);
 static DECLARE_WAIT_QUEUE_HEAD(syn_data_ready_wq);
 static DEFINE_MUTEX(syn_mutex);
 
+static int synaptics_ts_suspend(struct i2c_client *client);
+
 static struct synaptics_ts_data *gl_ts;
 static uint16_t syn_panel_version;
 static uint8_t vk_press;
@@ -253,40 +255,19 @@ static irqreturn_t synaptics_irq_thread(int irq, void *ptr);
 
 extern unsigned int get_tamper_sf(void);
 
-<<<<<<< HEAD
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_SWEEP2WAKE
-#define S2W_PWRKEY_DUR 60
-
-#define S2W_Y_MAX	2880
-#define S2W_X_MAX	1920
-#define S2W_Y_LIMIT	S2W_Y_MAX-180
-#define S2W_X_FINAL	250
-
-#define S2W_X_B0		250
-#define S2W_X_B1		S2W_X_B0+150
-#define S2W_X_B2		S2W_X_B0+450
-
-#define S2W_X_B3		S2W_X_B0+130
-#define S2W_X_B4		S2W_X_MAX-400
-#define S2W_X_B5		S2W_X_MAX-420
-
-static int last_touch_position_x = 0;
-static int last_touch_position_y = 0;
-static bool exec_count = true;
-static bool scr_on_touch = false, barrier[2] = {false, false};
-static bool r_barrier[2] = {false,false};
-=======
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-
 #define SWEEP_RIGHT 0x01
 #define SWEEP_LEFT 0x02
 #define SWEEP_UP 0x04
 #define SWEEP_DOWN 0x08
-#define DT2W_TIMEOUT_MAX 600
+#define DT2W_TIMEOUT_MAX 500
 #define DT2W_DELTA 230
 #define S2W_PWRKEY_DUR 60
 #define GEST_TIMEOUT 70
-#define WAKE_GESTURE 0x0b
+#define SWEEP_TIMEOUT 30
+#define BOOT_MODE_TIMEOUT 10000
+#define WAKE_MOTION 0x07
+#define WAKE_MOTION_HIDI 0x0b
 
 static cputime64_t prev_time;
 static int dt_prev_x = 0, dt_prev_y = 0;
@@ -295,21 +276,26 @@ static unsigned long pwrtrigger_time[2] = {0, 0};
 static bool barriery[2] = {false, false}, exec_county = true;
 static bool barrierx[2] = {false, false}, exec_countx = true;
 static int firstx = 0, firsty = 0;
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
+static unsigned long firsty_time = 0, firstx_time = 0;
 static bool scr_suspended = false;
 static int s2w_switch = 0, s2w_switch_temp = 0;
 static bool s2w_switch_changed = false;
 static int s2s_switch = 0;
 static int dt2w_switch = 0, dt2w_switch_temp = 0;
 static bool dt2w_switch_changed = false;
-static int gestures_switch = 1, gestures_switch_temp = 1;
+static int gestures_switch = 0, gestures_switch_temp = 0;
 static bool gestures_switch_changed = false;
 static int pocket_detect = 0;
 static int vib_strength = 20;
+int cam_switch = 1;
+static int boot_mode = 1;
+static unsigned long boot_mode_init;
+static bool cover_enable_ind = false;
 
 static struct wake_lock wg_wakelock;
+extern void camera_volume_button_disable(void);
 extern void proximity_set(int enabled);
-extern int pocket_detection_check(void);
+extern int check_pocket(void);
 extern struct vib_trigger *vib_trigger;
 static struct input_dev *gesture_dev;
 
@@ -321,7 +307,7 @@ void sweep2wake_setdev(struct input_dev *input_device)
 
 static void report_gesture(int gest)
 {
-	if (pocket_detect && !pocket_detection_check())
+	if (pocket_detect && !check_pocket())
 		return;
 
         pwrtrigger_time[1] = pwrtrigger_time[0];
@@ -331,7 +317,8 @@ static void report_gesture(int gest)
 		return;
 
 	vib_trigger_event(vib_trigger, vib_strength);
-	input_report_rel(gesture_dev, WAKE_GESTURE, gest);
+	input_report_rel(gesture_dev, WAKE_MOTION_HIDI, gest);
+	input_report_rel(gesture_dev, WAKE_MOTION, gest);
 	input_sync(gesture_dev);
 }
 
@@ -353,7 +340,7 @@ static void sweep2wake_presspwr(struct work_struct *sweep2wake_presspwr_work)
 }
 static DECLARE_WORK(sweep2wake_presspwr_work, sweep2wake_presspwr);
 
-static void sweep2wake_pwrtrigger(void)
+static void sweep2wake_pwrtrigger(int wake)
 {
         pwrtrigger_time[1] = pwrtrigger_time[0];
         pwrtrigger_time[0] = jiffies;	
@@ -361,7 +348,7 @@ static void sweep2wake_pwrtrigger(void)
 	if (pwrtrigger_time[0] - pwrtrigger_time[1] < GEST_TIMEOUT)
 		return;
 
-	if (pocket_detect && !pocket_detection_check())
+	if (pocket_detect && wake && !check_pocket())
 		return;
 
 	vib_trigger_event(vib_trigger, vib_strength);
@@ -389,6 +376,9 @@ static void reset_dt2w(void)
 
 static void dt2w_func(int x, int y, cputime64_t trigger_time)
 {
+	if (phone_call_stat == 1)
+		return;
+
         if ((x > 0 && x < 150) || x > 1470 || y > 2880) {
                 reset_dt2w();
 		dt2w_reset_handler();
@@ -407,12 +397,12 @@ static void dt2w_func(int x, int y, cputime64_t trigger_time)
                 if (((abs(x - dt_prev_x) < DT2W_DELTA) && (abs(y - dt_prev_y) < DT2W_DELTA))
 						|| (dt_prev_x == 0 && dt_prev_y == 0)) {
                         reset_dt2w();
-			pr_debug("[WG]: doubletap\n");
+			pr_info("[WG]: doubletap\n");
 			wake_lock_timeout(&wg_wakelock, HZ/2);
 			if (dt2w_switch && gestures_switch) {
 				report_gesture(15);
 			} else if (dt2w_switch) {
-	                        sweep2wake_pwrtrigger();
+	                        sweep2wake_pwrtrigger(1);
 			}
 			return;
                 } else {
@@ -431,14 +421,17 @@ static void reset_sv2w(void)
 	barriery[0] = false;
 	barriery[1] = false;
 	firsty = 0;
+	firsty_time = 0;
 }
 
 static void sweep2wake_vert_func(int x, int y)
 {
 	int prevy = 0, nexty = 0;
 
-	if (firsty == 0)
+	if (firsty == 0) {
 		firsty = y;
+		firsty_time = jiffies;
+	}
 	if (firsty > 2279)
 		reset_sv2w();
 
@@ -449,20 +442,20 @@ static void sweep2wake_vert_func(int x, int y)
 			nexty = prevy - 160;
 			if (barriery[0] == true || (y < prevy && y > nexty)) {
 				prevy = nexty;
-				nexty -= 180;
+				nexty -= 200;
 				barriery[0] = true;
 				if (barriery[1] == true || (y < prevy && y > nexty)) {
 					prevy = nexty;
 					barriery[1] = true;
 					if (y < prevy) {
 						if (y < (nexty - 160)) {
-							if (exec_county) {
-								pr_debug("[WG]: sweep up\n");
+							if (exec_county && (jiffies - firsty_time < SWEEP_TIMEOUT)) {
+								pr_info("[WG]: sweep up\n");
 								wake_lock_timeout(&wg_wakelock, HZ/2);
 								if (gestures_switch) {
 									report_gesture(2);
 								} else {
-						                        sweep2wake_pwrtrigger();
+						                        sweep2wake_pwrtrigger(1);
 								}
 								exec_county = false;
 							}
@@ -476,20 +469,20 @@ static void sweep2wake_vert_func(int x, int y)
 			nexty = prevy + 160;
 			if (barriery[0] == true || (y > prevy && y < nexty)) {
 				prevy = nexty;
-				nexty += 180;
+				nexty += 200;
 				barriery[0] = true;
 				if (barriery[1] == true || (y > prevy && y < nexty)) {
 					prevy = nexty;
 					barriery[1] = true;
 					if (y > prevy) {
 						if (y > (nexty + 160)) {
-							if (exec_county) {
-								pr_debug("[WG]: sweep down\n");
+							if (exec_county && (jiffies - firsty_time < SWEEP_TIMEOUT)) {
+								pr_info("[WG]: sweep down\n");
 								wake_lock_timeout(&wg_wakelock, HZ/2);
 								if (gestures_switch) {
 									report_gesture(3);
 								} else {
-						                        sweep2wake_pwrtrigger();
+						                        sweep2wake_pwrtrigger(1);
 								}
 								exec_county = false;
 							}
@@ -503,39 +496,21 @@ static void sweep2wake_vert_func(int x, int y)
 
 static void reset_sh2w(void)
 {
-<<<<<<< HEAD
-	exec_count = true;
-	barrier[0] = false;
-	barrier[1] = false;
-	r_barrier[0] = false;
-	r_barrier[1] = false;
-	scr_on_touch = false;
-=======
 	exec_countx = true;
 	barrierx[0] = false;
 	barrierx[1] = false;
 	firstx = 0;
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
+	firstx_time = 0;
 }
 
 static void sweep2wake_horiz_func(int x, int y, int wake)
 {
 	int prevx = 0, nextx = 0;
-	int r_prevx = 0, r_nextx = 0;
 
-<<<<<<< HEAD
- 	// s2s: right->left
-	if (scr_suspended == false && s2w_switch > 0) {
-		scr_on_touch=true;
-		prevx = (S2W_X_MAX - S2W_X_FINAL);
-		nextx = S2W_X_B2;
-		if ((barrier[0] == true) ||
-		   ((x < prevx) &&
-		    (x > nextx) &&
-		    (y > S2W_Y_LIMIT))) {
-=======
-	if (firstx == 0)
+	if (firstx == 0) {
 		firstx = x;
+		firstx_time = jiffies;
+	}
 	if (firstx > 1619)
 		reset_sh2w();
 
@@ -544,32 +519,21 @@ static void sweep2wake_horiz_func(int x, int y, int wake)
 		prevx = firstx;
 		nextx = prevx + 180;
 		if (barrierx[0] == true || (x > prevx && x < nextx)) {
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
 			prevx = nextx;
-			nextx += 180;
+			nextx += 200;
 			barrierx[0] = true;
 			if (barrierx[1] == true || (x > prevx && x < nextx)) {
 				prevx = nextx;
-<<<<<<< HEAD
-				barrier[1] = true;
-				if ((x < prevx) &&
-				    (y > S2W_Y_LIMIT)) {
-					if (x < S2W_X_FINAL) {
-						if (exec_count) {
-							pr_info("s2w: OFF\n");
-							sweep2wake_pwrtrigger();
-							exec_count = false;
-=======
 				barrierx[1] = true;
 				if (x > prevx) {
 					if (x > (nextx + 180)) {
-						if (exec_countx) {
-							pr_debug("[WG]: sweep right\n");
+						if (exec_countx && (jiffies - firstx_time < SWEEP_TIMEOUT)) {
+							pr_info("[WG]: sweep right\n");
 							wake_lock_timeout(&wg_wakelock, HZ/2);
 							if (gestures_switch && wake) {
 								report_gesture(5);
 							} else {
-						        	sweep2wake_pwrtrigger();
+						        	sweep2wake_pwrtrigger(wake);
 							}
 							exec_countx = false;
 						}
@@ -583,64 +547,29 @@ static void sweep2wake_horiz_func(int x, int y, int wake)
 		nextx = prevx - 180;
 		if ((barrierx[0] == true) ||(x < prevx && x > nextx)) {
 			prevx = nextx;
-			nextx -= 180;
+			nextx -= 200;
 			barrierx[0] = true;
 			if ((barrierx[1] == true) || (x < prevx && x > nextx)) {
 				prevx = nextx;
 				barrierx[1] = true;
 				if (x < prevx) {
 					if (x < (nextx - 180)) {
-						if (exec_countx) {
-							pr_debug("[WG]: sweep left\n");
+						if (exec_countx && (jiffies - firstx_time < SWEEP_TIMEOUT)) {
+							pr_info("[WG]: sweep left\n");
 							wake_lock_timeout(&wg_wakelock, HZ/2);
 							if (gestures_switch && wake) {
 								report_gesture(4);
 							} else {
-						        	sweep2wake_pwrtrigger();
+						        	sweep2wake_pwrtrigger(wake);
 							}
 							exec_countx = false;
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
 						}
 					}
 				}
 			}
 		}
-		// s2s: left->right
-		r_prevx = S2W_X_B0;
-		r_nextx = S2W_X_B3;
-		if ((r_barrier[0] == true) ||
-		   ((x > r_prevx) &&
-		    (x < r_nextx) &&
-		    (y > S2W_Y_LIMIT))) {
-			r_prevx = r_nextx;
-			r_nextx = S2W_X_B4;
-			r_barrier[0] = true;
-			if ((r_barrier[1] == true) ||
-			   ((x > r_prevx) &&
-			    (x < r_nextx) &&
-			    (y > S2W_Y_LIMIT))) {
-				r_prevx = r_nextx;
-				r_barrier[1] = true;
-				if ((x > r_prevx) &&
-				    (y > S2W_Y_LIMIT)) {
-					if (x > S2W_X_B5) {
-						if (exec_count) {
-							pr_info("s2w: OFF\n");
- 							sweep2wake_pwrtrigger();
-							exec_count = false;
- 						}
-
- 					}
-
- 				}
-
- 			}
-
- 		}
-
- 	}
-
- }
+	}
+}
 #endif
 
 
@@ -2179,12 +2108,29 @@ static ssize_t synaptics_pocket_detect_dump(struct device *dev,
 
 static DEVICE_ATTR(pocket_detect, 0666,
 	synaptics_pocket_detect_show, synaptics_pocket_detect_dump);
+
+static ssize_t synaptics_camera_gesture_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	size_t count = 0;
+	count += sprintf(buf, "%d\n", cam_switch);
+	return count;
+}
+
+static ssize_t synaptics_camera_gesture_dump(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (buf[0] >= '0' && buf[0] <= '1' && buf[1] == '\n')
+		if (cam_switch != buf[0] - '0')
+			cam_switch = buf[0] - '0';
+	return count;
+}
+
+static DEVICE_ATTR(camera_gesture, 0666,
+	synaptics_camera_gesture_show, synaptics_camera_gesture_dump);
 #endif	
 
-<<<<<<< HEAD
-=======
 	
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
 enum SR_REG_STATE{
 	ALLOCATE_DEV_FAIL = -2,
 	REGISTER_DEV_FAIL,
@@ -2309,7 +2255,8 @@ static int synaptics_touch_sysfs_init(void)
 		sysfs_create_file(android_touch_kobj, &dev_attr_doubletap2wake.attr) ||
 		sysfs_create_file(android_touch_kobj, &dev_attr_wake_gestures.attr) ||
 		sysfs_create_file(android_touch_kobj, &dev_attr_vib_strength.attr) ||
-		sysfs_create_file(android_touch_kobj, &dev_attr_pocket_detect.attr)
+		sysfs_create_file(android_touch_kobj, &dev_attr_pocket_detect.attr) ||
+		sysfs_create_file(android_touch_kobj, &dev_attr_camera_gesture.attr)
 #endif
 #ifdef SYN_WIRELESS_DEBUG
 		|| sysfs_create_file(android_touch_kobj, &dev_attr_enabled.attr)
@@ -2319,19 +2266,7 @@ static int synaptics_touch_sysfs_init(void)
 	if (get_address_base(gl_ts, 0x54, FUNCTION))
 		if (sysfs_create_file(android_touch_kobj, &dev_attr_diag.attr))
 			return -ENOMEM;
-<<<<<<< HEAD
-
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_SWEEP2WAKE
-	ret = sysfs_create_file(android_touch_kobj, &dev_attr_sweep2wake.attr);
-	if (ret) {
-		printk(KERN_ERR "%s: sysfs_create_file failed\n", __func__);
-		return ret;
-	}
-#endif			
-
-=======
 		
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
 #ifdef SYN_WIRELESS_DEBUG
 	ret= gpio_request(ts->gpio_irq, "synaptics_attn");
 	if (ret) {
@@ -2389,6 +2324,7 @@ static void synaptics_touch_sysfs_remove(void)
 	sysfs_remove_file(android_touch_kobj, &dev_attr_wake_gestures.attr);
 	sysfs_remove_file(android_touch_kobj, &dev_attr_vib_strength.attr);
 	sysfs_remove_file(android_touch_kobj, &dev_attr_pocket_detect.attr);
+	sysfs_remove_file(android_touch_kobj, &dev_attr_camera_gesture.attr);
 #endif
 	kobject_del(android_touch_kobj);
 }
@@ -2872,7 +2808,7 @@ static void synaptics_ts_finger_func(struct synaptics_ts_data *ts)
 								finger_data[i][1] = -10; 
 							}
 #endif
-
+						
 							if (ts->support_htc_event) {
 								input_report_abs(ts->input_dev, ABS_MT_AMPLITUDE,
 									finger_data[i][3] << 16 | finger_data[i][2]);
@@ -2905,11 +2841,6 @@ static void synaptics_ts_finger_func(struct synaptics_ts_data *ts)
 						x_pos[i] = finger_data[i][0];
 						y_pos[i] = finger_data[i][1];
 						finger_pressed &= ~BIT(i);
-<<<<<<< HEAD
-
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_SWEEP2WAKE
-						detect_sweep2wake(x_pos[i], y_pos[i]);
-=======
 						
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
 						if (!scr_suspended && s2s_switch && y_pos[0] > 2700)
@@ -2918,8 +2849,8 @@ static void synaptics_ts_finger_func(struct synaptics_ts_data *ts)
 							sweep2wake_vert_func(x_pos[0], y_pos[0]);
 							sweep2wake_horiz_func(x_pos[0], y_pos[0], 1);
 						}
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
 #endif
+
 						if ((finger_press_changed & BIT(i)) && ts->debug_log_level & BIT(3)) {
 							if(ts->width_factor && ts->height_factor){
 								pr_info("[TP] Screen:F[%02d]:Down, X=%d, Y=%d, W=%d, Z=%d, IM:%d, CIDIM:%d, Freq:%d, NS:%d\n",
@@ -3340,16 +3271,33 @@ static int hallsensor_hover_status_handler_func(struct notifier_block *this,
 	pr_info("[TP][HL] %s[%s]", pole? "att_s" : "att_n", pole_value ? "Near" : "Far");
 
 	if (pole == 1 && ts->package_id == 3528 && ts->cover_setting[0]) {
-		if (pole_value == 0)
+		if (pole_value == 0) {
 			ts->cover_enable = 0;
-		else
+			
+		} else {
 			ts->cover_enable = 1;
-
+		}
 		if (!ts->i2c_to_mcu) {
 			ret = syn_set_cover_func(ts, ts->cover_enable);
 			if (ret < 0)
 				return ret;
 		}
+
+		if (scr_suspended && ts->cover_enable && !cover_enable_ind && (gestures_switch || dt2w_switch || s2w_switch)) {
+			if (unlikely(boot_mode))
+				return NOTIFY_OK;
+			cover_enable_ind = true;
+			dt2w_reset_handler();
+			disable_irq_wake(ts->client->irq);
+			synaptics_ts_suspend(ts->client);
+			if(gpio_is_valid(ts->gpio_i2c)) {
+				gpio_direction_output(ts->gpio_i2c, 1);
+				ts->i2c_to_mcu = 1;
+				printk("[TP][SensorHub] Switch touch i2c to MCU (from cover)\n");
+			}
+			touch_status(1);
+		}
+
 		pr_info("[TP] %s: cover_enable = %d.\n", __func__, ts->cover_enable);
 	}
 
@@ -4418,6 +4366,7 @@ static int __devinit synaptics_ts_probe(
 
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
 	wake_lock_init(&wg_wakelock, WAKE_LOCK_SUSPEND, "wg_wakelock");
+	boot_mode_init = jiffies;
 #endif
 
 #ifdef CONFIG_FB
@@ -4553,7 +4502,7 @@ static int __devexit synaptics_ts_remove(struct i2c_client *client)
 	input_unregister_device(sweep2wake_pwrdev);
 	input_free_device(sweep2wake_pwrdev);
 #endif
-
+	
 	synaptics_touch_sysfs_remove();
 
 	if (ts->report_data != NULL)
@@ -4572,16 +4521,16 @@ static int synaptics_ts_suspend(struct i2c_client *client)
 	uint16_t reg = 0;
 	struct synaptics_ts_data *ts = i2c_get_clientdata(client);
 	pr_info("[TP] %s: enter\n", __func__);
-
+	pr_info("[TP] cover enable: %d\n", cover_enable_ind);
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-	if (s2w_switch || dt2w_switch || gestures_switch) {
+	if (!boot_mode && !cover_enable_ind && (s2w_switch || dt2w_switch || gestures_switch)) {
 		enable_irq_wake(client->irq);
 	}
 #endif
 	
 	if (ts->use_irq) {
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-		if (!s2w_switch && !dt2w_switch && !gestures_switch) {
+		if (boot_mode || cover_enable_ind || (!s2w_switch && !dt2w_switch && !gestures_switch)) {
 #endif
 			disable_irq(client->irq);
 			ts->irq_enabled = 0;
@@ -4592,7 +4541,7 @@ static int synaptics_ts_suspend(struct i2c_client *client)
 		hrtimer_cancel(&ts->timer);
 		ret = cancel_work_sync(&ts->work);
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-		if (!s2w_switch && !dt2w_switch && !gestures_switch) {
+		if (cover_enable_ind || (!s2w_switch && !dt2w_switch && !gestures_switch)) {
 #endif
 			if (ret && ts->use_irq) /* if work was pending disable-count is now 2 */
 				enable_irq(client->irq);
@@ -4690,7 +4639,7 @@ static int synaptics_ts_suspend(struct i2c_client *client)
 
 	}
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-	if (!s2w_switch && !dt2w_switch && !gestures_switch) {
+	if (boot_mode || cover_enable_ind || (!s2w_switch && !dt2w_switch && !gestures_switch)) {
 #endif
 		if (ts->power)
 			ts->power(0);
@@ -4720,15 +4669,15 @@ static int synaptics_ts_suspend(struct i2c_client *client)
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
 	}
 
-<<<<<<< HEAD
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_SWEEP2WAKE
-=======
-	if (pocket_detect && (s2w_switch || dt2w_switch || gestures_switch))
-		proximity_set(1);
->>>>>>> 13edd8f... Wake Gestures: Allow customization of the screen wake gestures on HTC m8. These gestures do not require the phone to moved in order to work. Gestures available: sweep right, sweep left, sweep up, sweep down, and doubletap. Also includes sweep2sleep, adjustable haptic feedback, and pocket detection (however, the pocket detection is not fully working).
+	if (!boot_mode && !cover_enable_ind && (s2w_switch || dt2w_switch || gestures_switch)) {
+		if (pocket_detect && !phone_call_stat && !boot_mode)
+			proximity_set(1);
+		if (!cam_switch)
+			camera_volume_button_disable();
+	}
+
 	scr_suspended = true;
 #endif
-
 	return 0;
 }
 
@@ -4737,13 +4686,13 @@ static int synaptics_ts_resume(struct i2c_client *client)
 	int ret, i;
 	struct synaptics_ts_data *ts = i2c_get_clientdata(client);
 	pr_info("[TP] %s: enter\n", __func__);
-
+	pr_info("[TP] cover enable: %d\n", cover_enable_ind);
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-	if (s2w_switch || dt2w_switch || gestures_switch) {
+	if (!boot_mode && !cover_enable_ind && (s2w_switch || dt2w_switch || gestures_switch)) {
 		disable_irq_wake(client->irq);
 	}
 
-	if (!s2w_switch && !dt2w_switch && !gestures_switch) {
+	if (boot_mode || cover_enable_ind || (!s2w_switch && !dt2w_switch && !gestures_switch)) {
 #endif 
 		if (ts->power) {
 			ts->power(1);
@@ -4804,7 +4753,7 @@ static int synaptics_ts_resume(struct i2c_client *client)
 	}
 
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-	if (!s2w_switch && !dt2w_switch && !gestures_switch) {
+	if (boot_mode || cover_enable_ind || (!s2w_switch && !dt2w_switch && !gestures_switch)) {
 #endif
 		if (ts->use_irq) {
 			if (!ts->irq_enabled) {
@@ -4832,12 +4781,15 @@ static int synaptics_ts_resume(struct i2c_client *client)
 		gestures_switch_changed = false;
 	}
 
-	if (pocket_detect && (s2w_switch || dt2w_switch || gestures_switch))
+	if (pocket_detect && !phone_call_stat && !boot_mode && (s2w_switch || dt2w_switch || gestures_switch))
 		proximity_set(0);
+
+	if (unlikely(boot_mode))
+		if(jiffies - boot_mode_init > BOOT_MODE_TIMEOUT)
+			boot_mode = 0;
 
 	scr_suspended = false;
 #endif 
-
 	return 0;
 }
 
@@ -4858,7 +4810,7 @@ static int fb_notifier_callback(struct notifier_block *self,
 		case FB_BLANK_UNBLANK:
 #if defined(CONFIG_SYNC_TOUCH_STATUS)
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-			if (!s2w_switch && !dt2w_switch && !gestures_switch) {
+			if (boot_mode || cover_enable_ind || (!s2w_switch && !dt2w_switch && !gestures_switch)) {
 #endif
 				touch_status(0);
 				if(gpio_is_valid(ts->gpio_i2c))
@@ -4873,6 +4825,10 @@ static int fb_notifier_callback(struct notifier_block *self,
 #endif
 #endif
 			synaptics_ts_resume(ts->client);
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
+			if (!ts->cover_enable)
+				cover_enable_ind = false;
+#endif
 			break;
 		case FB_BLANK_POWERDOWN:
 		case FB_BLANK_HSYNC_SUSPEND:
@@ -4883,12 +4839,14 @@ static int fb_notifier_callback(struct notifier_block *self,
 
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
 			dt2w_reset_handler();
+			if (ts->cover_enable)
+				cover_enable_ind = true;
 #endif
 			synaptics_ts_suspend(ts->client);
 
 #if defined(CONFIG_SYNC_TOUCH_STATUS)
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-			if (!s2w_switch && !dt2w_switch && !gestures_switch) {
+			if (boot_mode || cover_enable_ind || (!s2w_switch && !dt2w_switch && !gestures_switch)) {
 #endif
 				if(gpio_is_valid(ts->gpio_i2c))
 				{
@@ -4978,4 +4936,3 @@ module_exit(synaptics_ts_exit);
 
 MODULE_DESCRIPTION("Synaptics Touchscreen Driver");
 MODULE_LICENSE("GPL");
-
