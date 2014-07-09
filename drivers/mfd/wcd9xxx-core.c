@@ -1957,3 +1957,4 @@ module_exit(wcd9xxx_exit);
 MODULE_DESCRIPTION("Codec core driver");
 MODULE_VERSION("1.0");
 MODULE_LICENSE("GPL v2");
+

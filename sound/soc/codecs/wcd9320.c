@@ -4281,16 +4281,11 @@ static int taiko_volatile(struct snd_soc_codec *ssc, unsigned int reg)
 	return 0;
 }
 
-<<<<<<< HEAD
-static int taiko_write(struct snd_soc_codec *codec, unsigned int reg,
-	unsigned int value)
-=======
 #ifndef CONFIG_SOUND_CONTROL_HAX_3_GPL 
 static
 #endif
 unsigned int taiko_read(struct snd_soc_codec *codec,
 				unsigned int reg)
->>>>>>> 6c9ff0f... Sound Control: (Optional) work around for Nexus 4/5 audio issues
 {
 	unsigned int val;
 	int ret;
@@ -4314,10 +4309,6 @@ unsigned int taiko_read(struct snd_soc_codec *codec,
 	val = wcd9xxx_reg_read(&wcd9xxx->core_res, reg);
 	return val;
 }
-<<<<<<< HEAD
-static unsigned int taiko_read(struct snd_soc_codec *codec,
-				unsigned int reg)
-=======
 #ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
 EXPORT_SYMBOL(taiko_read);
 #endif
@@ -4331,7 +4322,6 @@ static
 #endif
 int taiko_write(struct snd_soc_codec *codec, unsigned int reg,
 	unsigned int value)
->>>>>>> 6c9ff0f... Sound Control: (Optional) work around for Nexus 4/5 audio issues
 {
 	int ret;
 #ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
@@ -4362,12 +4352,9 @@ int taiko_write(struct snd_soc_codec *codec, unsigned int reg,
 	return wcd9xxx_reg_write(&wcd9xxx->core_res, reg, value);
 #endif
 }
-<<<<<<< HEAD
-=======
 #ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
 EXPORT_SYMBOL(taiko_write);
 #endif
->>>>>>> 6c9ff0f... Sound Control: (Optional) work around for Nexus 4/5 audio issues
 
 static int taiko_startup(struct snd_pcm_substream *substream,
 		struct snd_soc_dai *dai)
@@ -6928,6 +6915,11 @@ static struct regulator *taiko_codec_find_regulator(struct snd_soc_codec *codec,
 	return NULL;
 }
 
+#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
+struct snd_soc_codec *fauxsound_codec_ptr;
+EXPORT_SYMBOL(fauxsound_codec_ptr);
+#endif
+
 static int taiko_codec_probe(struct snd_soc_codec *codec)
 {
 	struct wcd9xxx *control;
@@ -6943,6 +6935,11 @@ static int taiko_codec_probe(struct snd_soc_codec *codec)
 	void *ptr = NULL;
 	struct wcd9xxx *core = dev_get_drvdata(codec->dev->parent);
 	struct wcd9xxx_core_resource *core_res;
+
+#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
+	pr_info("taiko codec probe...\n");
+	fauxsound_codec_ptr = codec;
+#endif
 
 	codec->control_data = dev_get_drvdata(codec->dev->parent);
 	control = codec->control_data;
@@ -7237,3 +7234,4 @@ module_exit(taiko_codec_exit);
 
 MODULE_DESCRIPTION("Taiko codec driver");
 MODULE_LICENSE("GPL v2");
+
