@@ -927,14 +927,16 @@ static int get_proximity(struct device *dev, struct device_attribute *attr, char
 }
 
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
-void proximity_set(int enabled)
+extern int cam_switch;
+
+static int proximity_flag = 0;
+
+static void sensor_enable(int sensors_id, int enabled)
 {
-	int sensors_id = 4;
-	u8 data;
 	u8 i;
-	int retry = 0;
-	int rc = 0;
+	u8 data;
 	u8 data8[8] = {0};
+	int retry = 0, rc = 0;
 
 	for (retry = 0; retry < ACTIVE_RETRY_TIMES; retry++) {
 		if (mcu_data->resume_done != 1)
@@ -952,11 +954,20 @@ void proximity_set(int enabled)
 		return;
 	}
 
-	if (enabled == 0) {
+	if ((sensors_id == Proximity) && (enabled == 0)) {
 		rc = CWMCU_i2c_read(mcu_data, CW_I2C_REG_SENSORS_CALIBRATOR_DEBUG_PROXIMITY, data8, 8);
 		I("%s: AUtoK: Threshold = %d, SADC = %d, CompensationValue = %d\n", __func__, data8[5], data8[4], data8[6]);
 		I("%s: AutoK: QueueIsEmpty = %d, Queue = %d %d %d %d\n", __func__, data8[7], data8[0], data8[1], data8[2], data8[3]);
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
+		proximity_flag = 0;
+#endif
 	}
+
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
+	if ((sensors_id == Proximity) && (enabled == 1)) {
+		proximity_flag = 1;
+	}
+#endif
 
 	if (enabled == 1) {
 		mcu_data->filter_first_zeros[sensors_id] = 1;
@@ -968,23 +979,44 @@ void proximity_set(int enabled)
 	i = sensors_id /8;
 	data = (u8)(mcu_data->enabled_list>>(i*8));
 
-	D("%s: i= %d data = %d CWSTM32_ENABLE_REG= %d \n", __func__, i, data, CWSTM32_ENABLE_REG+i);
+	D("%s++: sensors_id = %d, enabled = %d\n", __func__, sensors_id, enabled);
 
 	CWMCU_i2c_write(mcu_data, CWSTM32_ENABLE_REG+i, &data,1);
 
 	if ((mcu_data->input != NULL) && (sensors_id == Proximity) && (enabled == 1)) {
 		input_report_abs(mcu_data->input, ABS_DISTANCE, -1);
-		D("%s: Report dummy -1 proximity event\n", __func__);
 	}
 }
 
-int pocket_detection_check(void)
+void proximity_set(int enabled)
 {
-	u8 data2[2]={0};
+	if (enabled) {
+		sensor_enable(Proximity, enabled);
+		I("[WG] proximity sensor enabled\n");
+	} else if (!proximity_flag) {
+		sensor_enable(Proximity, enabled);
+		I("[WG] proximity sensor disabled\n");
+	} else {
+		I("[WG] proximity sensor enabled by system\n");
+	}
+}
 
-	CWMCU_i2c_read(mcu_data, CWSTM32_READ_Proximity, data2, 2);
-	D("%s: %x %x \n",  __func__, data2[0], data2[1]);
-	return data2[0];
+void camera_volume_button_disable(void)
+{
+	sensor_enable(Gesture_Motion_HIDI, 0);
+	sensor_enable(Gesture_Motion, 0);
+}
+
+int check_pocket(void)
+{
+	u8 data[10]={0};
+	int ret;
+
+	CWMCU_i2c_read(mcu_data, CWSTM32_READ_Proximity, data, 2);
+	I("[WG] check pocket: data0=%d data1=%d\n", data[0], data[1]);
+	ret = data[0];
+
+	return ret;
 }
 #endif
 
@@ -3601,4 +3633,3 @@ module_exit(CWMCU_i2c_exit);
 MODULE_DESCRIPTION("CWMCU I2C Bus Driver V1.6");
 MODULE_AUTHOR("CyWee Group Ltd.");
 MODULE_LICENSE("GPL");
-

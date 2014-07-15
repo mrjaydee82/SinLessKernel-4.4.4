@@ -465,6 +465,10 @@ static ssize_t htc_battery_set_phone_call(struct device *dev,
 
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKE_GESTURES
 	phone_call_stat = phone_call;
+	if (phone_call_stat)
+		printk("[WG] in phone call\n");
+	else
+		printk("[WG] phone call end\n");
 #endif
 
 	return count;
@@ -1367,4 +1371,3 @@ const struct battery_info_reply* htc_battery_core_get_batt_info_rep(void)
 	return &battery_core_info.rep;
 }
 EXPORT_SYMBOL_GPL(htc_battery_core_get_batt_info_rep);
-
